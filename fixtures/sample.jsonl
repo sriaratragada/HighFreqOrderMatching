@@ -1,0 +1,4 @@
+{"cmd":"add","side":"BUY","order_type":"MARKET","id":1,"qty":20}
+{"cmd":"add","side":"SELL","order_type":"LIMIT","id":2,"price":100.5,"qty":10}
+{"cmd":"add","side":"SELL","order_type":"LIMIT","id":3,"price":90.0,"qty":10}
+{"cmd":"add","side":"SELL","order_type":"LIMIT","id":4,"price":95.0,"qty":10}

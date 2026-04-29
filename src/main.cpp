@@ -1,8 +1,7 @@
-#include "orderbook.h"
+#include "replay_formats.h"
 
 #include <hfom/version.hpp>
 
-#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -12,34 +11,16 @@
 
 namespace {
 
-void trim(std::string& s) {
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
-        s.erase(s.begin());
-    }
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) {
-        s.pop_back();
-    }
-}
-
-bool iequals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 void usage() {
-    std::cerr << "Usage: match_cli [--allocation FIFO|PRORATA] [--file PATH] [--json]\n"
-              << "       [--dump-book] [--dump-depth N]\n"
+    std::cerr << "Usage: match_cli [--allocation FIFO|PRORATA] [--file PATH] [--format dsl|csv|jsonl]\n"
+              << "       [--json] [--dump-book] [--dump-depth N]\n"
               << "       match_cli --version | -h | --help\n"
-              << "Reads commands from PATH or stdin. Lines starting with # are ignored.\n"
-              << "Commands:\n"
+              << "Input format defaults from --file extension (.csv, .jsonl, .ndjson); otherwise DSL (text).\n"
+              << "Use --format when reading from stdin or when the extension does not match the content.\n"
+              << "  CSV: first line is a fixed header: " << hfom::replay::kCsvHeaderLine << "\n"
+              << "  JSONL: one JSON object per line; cmd add|cancel|book (schema in README).\n"
+              << "DSL: lines starting with # are ignored.\n"
+              << "DSL commands:\n"
               << "  ADD BUY|SELL LIMIT [GTC|IOC|FOK] <id> <price> <qty>   (TIF defaults to GTC)\n"
               << "  ADD BUY|SELL MARKET [GTC|IOC|FOK] <id> <qty>\n"
               << "  ADD BUY|SELL STOP [GTC|IOC|FOK] <id> <stop_price> <qty>\n"
@@ -48,190 +29,12 @@ void usage() {
               << "Each matched fill prints one line (text or JSON when --json).\n";
 }
 
-bool parse_order_type(const std::string& t, Order::OrderType& out, std::string& err) {
-    if (iequals(t, "LIMIT")) {
-        out = Order::LIMIT;
-        return true;
-    }
-    if (iequals(t, "MARKET")) {
-        out = Order::MARKET;
-        return true;
-    }
-    if (iequals(t, "STOP")) {
-        out = Order::STOP;
-        return true;
-    }
-    err = "unknown order type: " + t;
-    return false;
-}
-
-bool parse_tif_token(const std::string& t, Order::TimeInForce& out, std::string& err) {
-    if (iequals(t, "GTC")) {
-        out = Order::GTC;
-        return true;
-    }
-    if (iequals(t, "IOC")) {
-        out = Order::IOC;
-        return true;
-    }
-    if (iequals(t, "FOK")) {
-        out = Order::FOK;
-        return true;
-    }
-    err = "unknown time-in-force: " + t;
-    return false;
-}
-
-bool process_line(const std::string& line_in, OrderBook& book, std::string& err) {
-    std::string line = line_in;
-    trim(line);
-    if (line.empty() || line[0] == '#') {
-        return true;
-    }
-
-    std::istringstream iss(line);
-    std::string cmd;
-    if (!(iss >> cmd)) {
-        return true;
-    }
-
-    if (iequals(cmd, "BOOK")) {
-        int depth = 10;
-        if (iss >> depth) {
-            if (depth < 1) {
-                err = "BOOK: depth must be positive";
-                return false;
-            }
-        }
-        std::string extra;
-        if (iss >> extra) {
-            err = "BOOK: trailing tokens";
-            return false;
-        }
-        book.printDepth(std::cout, depth);
-        return true;
-    }
-
-    if (iequals(cmd, "CANCEL")) {
-        int id = 0;
-        if (!(iss >> id)) {
-            err = "CANCEL: need order id";
-            return false;
-        }
-        if (!book.cancelOrder(id)) {
-            err = "CANCEL: order not found: " + std::to_string(id);
-            return false;
-        }
-        return true;
-    }
-
-    if (!iequals(cmd, "ADD")) {
-        err = "unknown command: " + cmd;
-        return false;
-    }
-
-    std::string side_s;
-    std::string type_s;
-    if (!(iss >> side_s >> type_s)) {
-        err = "ADD: expected ADD <BUY|SELL> <LIMIT|MARKET|STOP> ...";
-        return false;
-    }
-
-    Order o{};
-    if (iequals(side_s, "BUY")) {
-        o.type = Order::BUY;
-    } else if (iequals(side_s, "SELL")) {
-        o.type = Order::SELL;
-    } else {
-        err = "ADD: side must be BUY or SELL";
-        return false;
-    }
-
-    if (!parse_order_type(type_s, o.orderType, err)) {
-        return false;
-    }
-
-    std::string tok;
-    if (!(iss >> tok)) {
-        err = "ADD: missing id or time-in-force";
-        return false;
-    }
-
-    Order::TimeInForce tif = Order::GTC;
-    int id = 0;
-    if (iequals(tok, "GTC") || iequals(tok, "IOC") || iequals(tok, "FOK")) {
-        std::string tif_err;
-        if (!parse_tif_token(tok, tif, tif_err)) {
-            err = tif_err;
-            return false;
-        }
-        o.tif = tif;
-        if (!(iss >> id)) {
-            err = "ADD: need order id after time-in-force";
-            return false;
-        }
-        o.orderId = id;
-    } else {
-        try {
-            id = std::stoi(tok);
-        } catch (const std::exception&) {
-            err = "ADD: expected numeric order id or GTC|IOC|FOK";
-            return false;
-        }
-        o.orderId = id;
-    }
-
-    if (o.orderType == Order::LIMIT) {
-        double price = 0.0;
-        int qty = 0;
-        if (!(iss >> price >> qty)) {
-            err = "ADD LIMIT: need <price> <qty>";
-            return false;
-        }
-        o.price = price;
-        o.quantity = qty;
-    } else if (o.orderType == Order::MARKET) {
-        int qty = 0;
-        if (!(iss >> qty)) {
-            err = "ADD MARKET: need <qty>";
-            return false;
-        }
-        o.quantity = qty;
-    } else if (o.orderType == Order::STOP) {
-        double stop_px = 0.0;
-        int qty = 0;
-        if (!(iss >> stop_px >> qty)) {
-            err = "ADD STOP: need <stop_price> <qty>";
-            return false;
-        }
-        o.stopPrice = stop_px;
-        o.quantity = qty;
-    }
-
-    std::string extra;
-    if (iss >> extra) {
-        err = "trailing tokens on line";
-        return false;
-    }
-
-    if (!book.addOrder(o)) {
-        if (book.isOrderIdActive(o.orderId)) {
-            err = "ADD: duplicate order id (already active): " + std::to_string(o.orderId);
-        } else if (o.tif == Order::FOK) {
-            err = "ADD: FOK order could not be fully filled immediately";
-        } else {
-            err = "ADD: rejected";
-        }
-        return false;
-    }
-    return true;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     std::string allocation = "FIFO";
     std::string file_path;
+    std::string format_opt;
     bool json_trades = false;
     bool dump_book = false;
     int dump_depth = 10;
@@ -242,6 +45,8 @@ int main(int argc, char** argv) {
             allocation = argv[++i];
         } else if (a == "--file" && i + 1 < argc) {
             file_path = argv[++i];
+        } else if (a == "--format" && i + 1 < argc) {
+            format_opt = argv[++i];
         } else if (a == "--json") {
             json_trades = true;
         } else if (a == "--dump-book") {
@@ -262,6 +67,19 @@ int main(int argc, char** argv) {
             std::cerr << "Unknown argument: " << a << "\n";
             usage();
             return 2;
+        }
+    }
+
+    hfom::replay::InputFormat fmt = hfom::replay::InputFormat::Dsl;
+    if (!format_opt.empty()) {
+        if (!hfom::replay::parseFormatArg(format_opt, fmt)) {
+            std::cerr << "Unknown --format `" << format_opt << "` (use dsl, csv, or jsonl)\n";
+            return 2;
+        }
+    } else if (!file_path.empty()) {
+        hfom::replay::InputFormat inferred{};
+        if (hfom::replay::inferFormatFromPath(file_path, inferred)) {
+            fmt = inferred;
         }
     }
 
@@ -291,13 +109,41 @@ int main(int argc, char** argv) {
 
     std::string line;
     int line_no = 0;
+    bool csv_header_seen = false;
+
     while (std::getline(*in, line)) {
         ++line_no;
         std::string err;
-        if (!process_line(line, book, err)) {
+        bool ok = false;
+
+        switch (fmt) {
+            case hfom::replay::InputFormat::Dsl:
+                ok = hfom::replay::processDslLine(line, book, err);
+                break;
+            case hfom::replay::InputFormat::Csv:
+                if (!csv_header_seen) {
+                    ok = hfom::replay::validateCsvHeaderRow(line, err);
+                    if (ok) {
+                        csv_header_seen = true;
+                    }
+                } else {
+                    ok = hfom::replay::processCsvDataLine(line, book, err);
+                }
+                break;
+            case hfom::replay::InputFormat::Jsonl:
+                ok = hfom::replay::processJsonlLine(line, book, err);
+                break;
+        }
+
+        if (!ok) {
             std::cerr << "Error line " << line_no << ": " << err << "\n  " << line << '\n';
             return 1;
         }
+    }
+
+    if (fmt == hfom::replay::InputFormat::Csv && !csv_header_seen) {
+        std::cerr << "CSV replay requires a header row as the first line.\n";
+        return 1;
     }
 
     if (dump_book) {

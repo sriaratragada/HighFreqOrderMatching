@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`match_cli` replay formats:** stable-header **CSV** (Excel-friendly) and **JSON Lines** (`--format` or inferred from `.csv` / `.jsonl` / `.ndjson`); **`nlohmann/json`** via `FetchContent` for JSONL parsing; internal `hfom_replay` static library.
 - **Time-in-force** on `Order`: `GTC`, `IOC`, `FOK`; CLI optional tokens on `ADD`; FOK pre-check from available liquidity.
 - **`OrderBook::printDepth`** and CLI `BOOK [depth]`, plus **`--dump-book`** / **`--dump-depth`**.
 - **Per-book auto order IDs** (`next_order_id_` member).

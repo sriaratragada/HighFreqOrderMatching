@@ -2,3 +2,7 @@ add_executable(orderbook_tests orderbook_test.cpp)
 target_link_libraries(orderbook_tests PRIVATE hfom_orderbook GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(orderbook_tests)
+
+add_executable(replay_formats_tests replay_formats_test.cpp)
+target_link_libraries(replay_formats_tests PRIVATE hfom_replay GTest::gtest_main)
+gtest_discover_tests(replay_formats_tests)

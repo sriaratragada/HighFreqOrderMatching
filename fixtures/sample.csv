@@ -1,0 +1,5 @@
+action,side,order_type,tif,id,price,qty,stop_price,book_depth
+ADD,BUY,MARKET,,1,,20,
+ADD,SELL,LIMIT,,2,100.5,10,
+ADD,SELL,LIMIT,,3,90.0,10,
+ADD,SELL,LIMIT,,4,95.0,10,

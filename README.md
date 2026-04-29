@@ -18,8 +18,9 @@ In plain terms: it matches **buy** and **sell** instructions for a **single** in
 - **Time in force:** **GTC** (default—rest any remainder), **IOC** (match now, cancel remainder), **FOK** (fill entire size immediately or reject).
 - **Book depth:** `BOOK [depth]` in replays; **`--dump-book`** / **`--dump-depth`** after stdin ends.
 - **Per-`OrderBook` order-id sequence** when using auto ids (`orderId < 0`).
+- **Replay formats:** line-oriented **DSL**, stable-header **CSV** (Excel-friendly), and **JSON Lines** for tools; `--format` or inferred from file extension.
 - **CMake install** as **`HighFreqOrderMatching::hfom_orderbook`** with package config for `find_package`.
-- **Unit tests** via GoogleTest (optional fetch when `BUILD_HFOM_TESTS=ON`).
+- **Unit tests** via GoogleTest (optional fetch when `BUILD_HFOM_TESTS=ON`), including replay format parsing tests.
 
 ---
 
@@ -28,9 +29,9 @@ In plain terms: it matches **buy** and **sell** instructions for a **single** in
 | Layer | Role |
 |--------|------|
 | **Order book core** | Maintains sorted bid/ask maps (`price → deque<Order>`), executes matching loops, stop activation, optional trade sink. |
-| **CLI** | Line-oriented grammar → `Order` structs → `OrderBook`; formats trades to stdout/stderr. |
+| **CLI** | DSL / CSV / JSONL replay → `Order` structs → `OrderBook`; formats trades to stdout/stderr. |
 | **Tests** | Unit tests for crosses, partials, market peg, stops, pro-rata conservation, duplicates. |
-| **Build** | CMake 3.16+, C++17; optional `FetchContent` for GoogleTest when `BUILD_HFOM_TESTS=ON`. |
+| **Build** | CMake 3.16+, C++17; **`FetchContent`** for **nlohmann/json** (JSONL in CLI) and optional GoogleTest when `BUILD_HFOM_TESTS=ON`. |
 
 **Design choices**
 
@@ -93,6 +94,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/match_cli --file fixtures/sample.txt
+./build/match_cli --file fixtures/sample.csv
+./build/match_cli --file fixtures/sample.jsonl
 ```
 
 When embedding this project with `add_subdirectory`, tests default **off** unless you set `BUILD_HFOM_TESTS=ON` in the parent project.
@@ -117,6 +120,7 @@ The imported target exposes `orderbook.h` and `hfom/version.hpp` (`HFOM_VERSION_
 | Flag | Meaning |
 |------|---------|
 | `--file PATH` | Read commands from file (default: stdin) |
+| `--format dsl \| csv \| jsonl` | Input grammar (default: from `--file` extension, else DSL). Use with stdin when not using DSL. |
 | `--allocation FIFO \| PRORATA` | Matching at the touch |
 | `--json` | One JSON object per fill |
 | `--version` | Print version string |
@@ -124,13 +128,31 @@ The imported target exposes `orderbook.h` and `hfom/version.hpp` (`HFOM_VERSION_
 | `--dump-depth N` | With `--dump-book`, number of price levels per side (default 10) |
 | `-h`, `--help` | Usage |
 
-**Commands** (one per line)
+**Commands** (one per line) — **DSL** (text)
 
 - `ADD BUY|SELL LIMIT [GTC \| IOC \| FOK] <id> <price> <qty>` — omit TIF for **GTC**
 - `ADD BUY|SELL MARKET [GTC \| IOC \| FOK] <id> <qty>`
 - `ADD BUY|SELL STOP [GTC \| IOC \| FOK] <id> <stop_price> <qty>`
 - `CANCEL <id>`
 - `BOOK [depth]` — print top **depth** price levels per side (default 10)
+
+**CSV** (first line is a fixed header for Excel export consistency):
+
+```text
+action,side,order_type,tif,id,price,qty,stop_price,book_depth
+```
+
+- Rows: `action` is `ADD`, `CANCEL`, or `BOOK`. Empty `tif` means **GTC**. Quoted fields and a UTF-8 BOM on line 1 are accepted.
+- **ADD LIMIT:** `price`, `qty`; **ADD MARKET:** `qty`; **ADD STOP:** `stop_price`, `qty`.
+- **CANCEL:** `id` in the `id` column; **BOOK:** optional `book_depth` (default 10).
+
+**JSON Lines** (one JSON object per line, convenient for `jq` / scripts):
+
+- `{"cmd":"add", ...}` — `side` `buy`/`sell`; `order_type` or `type` `LIMIT`/`MARKET`/`STOP`; optional `tif` or `time_in_force` (`GTC`|`IOC`|`FOK`); `id` (integer); for limit: `price`, `qty`; market: `qty`; stop: `stop_price`, `qty`.
+- `{"cmd":"cancel","id":<int>}`
+- `{"cmd":"book"}` — optional `depth` or `book_depth` (default 10).
+
+`cmd` values are case-insensitive.
 
 Example text output: `TRADE <qty> <price> <bid_order_id> <ask_order_id>`
 

@@ -13,6 +13,13 @@ configure_file(
     @ONLY
 )
 
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 add_library(hfom_orderbook STATIC src/orderbook.cpp)
 target_include_directories(hfom_orderbook
     PUBLIC
@@ -21,8 +28,11 @@ target_include_directories(hfom_orderbook
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 
+add_library(hfom_replay STATIC src/replay_formats.cpp)
+target_link_libraries(hfom_replay PUBLIC hfom_orderbook nlohmann_json::nlohmann_json)
+
 add_executable(match_cli src/main.cpp)
-target_link_libraries(match_cli PRIVATE hfom_orderbook)
+target_link_libraries(match_cli PRIVATE hfom_replay)
 target_include_directories(match_cli PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 include(CMakePackageConfigHelpers)
@@ -71,7 +81,6 @@ else()
 endif()
 
 if(BUILD_HFOM_TESTS)
-    include(FetchContent)
     FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
