@@ -1,0 +1,2 @@
+#pragma once
+#define HFOM_VERSION_STRING "@PROJECT_VERSION@"

@@ -1,0 +1,4 @@
+add_executable(orderbook_tests orderbook_test.cpp)
+target_link_libraries(orderbook_tests PRIVATE hfom_orderbook GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(orderbook_tests)

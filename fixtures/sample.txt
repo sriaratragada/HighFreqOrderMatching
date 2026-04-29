@@ -1,0 +1,6 @@
+# Replay: market buy rests at numeric max when the ask side is empty,
+# then sells are added so the bid walks the book (same pattern as upstream demo).
+ADD BUY MARKET 1 20
+ADD SELL LIMIT 2 100.5 10
+ADD SELL LIMIT 3 90.0 10
+ADD SELL LIMIT 4 95.0 10
