@@ -8,8 +8,6 @@
 
 namespace {
 
-int s_next_order_id = 0;
-
 /// Largest-remainder allocation: shares `total` across `weights` (integer quantities).
 std::vector<int> proportionalAllocate(int total, const std::vector<int>& weights) {
     std::vector<int> out(weights.size(), 0);
@@ -44,7 +42,7 @@ std::vector<int> proportionalAllocate(int total, const std::vector<int>& weights
 
 }  // namespace
 
-int OrderBook::allocateOrderId() { return s_next_order_id++; }
+int OrderBook::allocateOrderId() { return next_order_id_++; }
 
 OrderBook::OrderBook(std::string allocation, TradeCallback trade_sink)
     : allocation(std::move(allocation)), trade_sink_(std::move(trade_sink)) {}
@@ -56,6 +54,82 @@ void OrderBook::ensureOrderId(Order& order) {
     if (order.timestamp == 0) {
         order.timestamp = Order::timeSinceEpochMillisec();
     }
+}
+
+void OrderBook::applyMarketPeg(Order& order,
+                               const std::map<double, std::deque<Order>>& bids_map,
+                               const std::map<double, std::deque<Order>>& asks_map) {
+    if (order.type == Order::BUY && order.orderType == Order::MARKET) {
+        order.price = (!asks_map.empty()) ? asks_map.begin()->first
+                                          : std::numeric_limits<double>::max();
+    } else if (order.type == Order::SELL && order.orderType == Order::MARKET) {
+        order.price = (!bids_map.empty()) ? bids_map.rbegin()->first
+                                          : std::numeric_limits<double>::lowest();
+    }
+}
+
+bool OrderBook::canFullyFill(const Order& order) const {
+    if (order.quantity <= 0) {
+        return true;
+    }
+    if (order.type == Order::BUY) {
+        if (order.orderType == Order::MARKET) {
+            if (asks.empty()) {
+                return false;
+            }
+            int sum = 0;
+            for (const auto& lvl : asks) {
+                for (const auto& o : lvl.second) {
+                    sum += o.quantity;
+                }
+                if (sum >= order.quantity) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        int rem = order.quantity;
+        for (const auto& lvl : asks) {
+            if (lvl.first > order.price) {
+                break;
+            }
+            for (const auto& o : lvl.second) {
+                rem -= o.quantity;
+                if (rem <= 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    if (order.orderType == Order::MARKET) {
+        if (bids.empty()) {
+            return false;
+        }
+        int sum = 0;
+        for (auto it = bids.rbegin(); it != bids.rend(); ++it) {
+            for (const auto& o : it->second) {
+                sum += o.quantity;
+            }
+            if (sum >= order.quantity) {
+                return true;
+            }
+        }
+        return false;
+    }
+    int rem = order.quantity;
+    for (auto it = bids.rbegin(); it != bids.rend(); ++it) {
+        if (it->first < order.price) {
+            break;
+        }
+        for (const auto& o : it->second) {
+            rem -= o.quantity;
+            if (rem <= 0) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool OrderBook::isOrderIdActive(int orderId) const {
@@ -92,11 +166,14 @@ bool OrderBook::addOrder(Order order) {
         checkStopOrders();
         return true;
     }
-    if (order.type == Order::BUY && order.orderType == Order::MARKET) {
-        order.price = (!asks.empty()) ? asks.begin()->first : std::numeric_limits<double>::max();
-    } else if (order.type == Order::SELL && order.orderType == Order::MARKET) {
-        order.price = (!bids.empty()) ? bids.rbegin()->first : std::numeric_limits<double>::lowest();
+
+    applyMarketPeg(order, bids, asks);
+
+    if (order.tif == Order::FOK && !canFullyFill(order)) {
+        return false;
     }
+
+    const int incoming_id = order.orderId;
 
     if (order.type == Order::BUY) {
         bids[order.price].push_back(order);
@@ -105,6 +182,11 @@ bool OrderBook::addOrder(Order order) {
     }
     checkStopOrders();
     matchOrders();
+
+    if (order.tif == Order::IOC) {
+        cancelOrder(incoming_id);
+    }
+
     return true;
 }
 
@@ -300,6 +382,34 @@ void OrderBook::executeTrade(const Order& bidOrder, const Order& askOrder, int q
                              double trade_price) {
     if (trade_sink_) {
         trade_sink_(quantity, trade_price, bidOrder.orderId, askOrder.orderId);
+    }
+}
+
+void OrderBook::printDepth(std::ostream& os, int max_levels) const {
+    if (max_levels <= 0) {
+        return;
+    }
+    os << "ASKS (price x qty)\n";
+    int a = 0;
+    for (const auto& lvl : asks) {
+        if (a >= max_levels) {
+            break;
+        }
+        int q = 0;
+        for (const auto& o : lvl.second) {
+            q += o.quantity;
+        }
+        os << "  " << lvl.first << " x " << q << '\n';
+        ++a;
+    }
+    os << "BIDS (price x qty)\n";
+    int b = 0;
+    for (auto it = bids.rbegin(); it != bids.rend() && b < max_levels; ++it, ++b) {
+        int q = 0;
+        for (const auto& o : it->second) {
+            q += o.quantity;
+        }
+        os << "  " << it->first << " x " << q << '\n';
     }
 }
 

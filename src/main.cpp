@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -35,13 +36,15 @@ bool iequals(const std::string& a, const std::string& b) {
 
 void usage() {
     std::cerr << "Usage: match_cli [--allocation FIFO|PRORATA] [--file PATH] [--json]\n"
+              << "       [--dump-book] [--dump-depth N]\n"
               << "       match_cli --version | -h | --help\n"
               << "Reads commands from PATH or stdin. Lines starting with # are ignored.\n"
               << "Commands:\n"
-              << "  ADD BUY|SELL LIMIT <id> <price> <qty>\n"
-              << "  ADD BUY|SELL MARKET <id> <qty>\n"
-              << "  ADD BUY|SELL STOP <id> <stop_price> <qty>\n"
+              << "  ADD BUY|SELL LIMIT [GTC|IOC|FOK] <id> <price> <qty>   (TIF defaults to GTC)\n"
+              << "  ADD BUY|SELL MARKET [GTC|IOC|FOK] <id> <qty>\n"
+              << "  ADD BUY|SELL STOP [GTC|IOC|FOK] <id> <stop_price> <qty>\n"
               << "  CANCEL <id>\n"
+              << "  BOOK [depth]   (print top depth levels per side; default 10)\n"
               << "Each matched fill prints one line (text or JSON when --json).\n";
 }
 
@@ -62,6 +65,23 @@ bool parse_order_type(const std::string& t, Order::OrderType& out, std::string& 
     return false;
 }
 
+bool parse_tif_token(const std::string& t, Order::TimeInForce& out, std::string& err) {
+    if (iequals(t, "GTC")) {
+        out = Order::GTC;
+        return true;
+    }
+    if (iequals(t, "IOC")) {
+        out = Order::IOC;
+        return true;
+    }
+    if (iequals(t, "FOK")) {
+        out = Order::FOK;
+        return true;
+    }
+    err = "unknown time-in-force: " + t;
+    return false;
+}
+
 bool process_line(const std::string& line_in, OrderBook& book, std::string& err) {
     std::string line = line_in;
     trim(line);
@@ -72,6 +92,23 @@ bool process_line(const std::string& line_in, OrderBook& book, std::string& err)
     std::istringstream iss(line);
     std::string cmd;
     if (!(iss >> cmd)) {
+        return true;
+    }
+
+    if (iequals(cmd, "BOOK")) {
+        int depth = 10;
+        if (iss >> depth) {
+            if (depth < 1) {
+                err = "BOOK: depth must be positive";
+                return false;
+            }
+        }
+        std::string extra;
+        if (iss >> extra) {
+            err = "BOOK: trailing tokens";
+            return false;
+        }
+        book.printDepth(std::cout, depth);
         return true;
     }
 
@@ -95,8 +132,7 @@ bool process_line(const std::string& line_in, OrderBook& book, std::string& err)
 
     std::string side_s;
     std::string type_s;
-    int id = 0;
-    if (!(iss >> side_s >> type_s >> id)) {
+    if (!(iss >> side_s >> type_s)) {
         err = "ADD: expected ADD <BUY|SELL> <LIMIT|MARKET|STOP> ...";
         return false;
     }
@@ -114,7 +150,36 @@ bool process_line(const std::string& line_in, OrderBook& book, std::string& err)
     if (!parse_order_type(type_s, o.orderType, err)) {
         return false;
     }
-    o.orderId = id;
+
+    std::string tok;
+    if (!(iss >> tok)) {
+        err = "ADD: missing id or time-in-force";
+        return false;
+    }
+
+    Order::TimeInForce tif = Order::GTC;
+    int id = 0;
+    if (iequals(tok, "GTC") || iequals(tok, "IOC") || iequals(tok, "FOK")) {
+        std::string tif_err;
+        if (!parse_tif_token(tok, tif, tif_err)) {
+            err = tif_err;
+            return false;
+        }
+        o.tif = tif;
+        if (!(iss >> id)) {
+            err = "ADD: need order id after time-in-force";
+            return false;
+        }
+        o.orderId = id;
+    } else {
+        try {
+            id = std::stoi(tok);
+        } catch (const std::exception&) {
+            err = "ADD: expected numeric order id or GTC|IOC|FOK";
+            return false;
+        }
+        o.orderId = id;
+    }
 
     if (o.orderType == Order::LIMIT) {
         double price = 0.0;
@@ -150,7 +215,13 @@ bool process_line(const std::string& line_in, OrderBook& book, std::string& err)
     }
 
     if (!book.addOrder(o)) {
-        err = "ADD: duplicate order id (already active): " + std::to_string(o.orderId);
+        if (book.isOrderIdActive(o.orderId)) {
+            err = "ADD: duplicate order id (already active): " + std::to_string(o.orderId);
+        } else if (o.tif == Order::FOK) {
+            err = "ADD: FOK order could not be fully filled immediately";
+        } else {
+            err = "ADD: rejected";
+        }
         return false;
     }
     return true;
@@ -162,6 +233,8 @@ int main(int argc, char** argv) {
     std::string allocation = "FIFO";
     std::string file_path;
     bool json_trades = false;
+    bool dump_book = false;
+    int dump_depth = 10;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -171,6 +244,14 @@ int main(int argc, char** argv) {
             file_path = argv[++i];
         } else if (a == "--json") {
             json_trades = true;
+        } else if (a == "--dump-book") {
+            dump_book = true;
+        } else if (a == "--dump-depth" && i + 1 < argc) {
+            dump_depth = std::stoi(argv[++i]);
+            if (dump_depth < 1) {
+                std::cerr << "--dump-depth must be >= 1\n";
+                return 2;
+            }
         } else if (a == "--version") {
             std::cout << HFOM_VERSION_STRING << '\n';
             return 0;
@@ -217,6 +298,10 @@ int main(int argc, char** argv) {
             std::cerr << "Error line " << line_no << ": " << err << "\n  " << line << '\n';
             return 1;
         }
+    }
+
+    if (dump_book) {
+        book.printDepth(std::cout, dump_depth);
     }
 
     return 0;

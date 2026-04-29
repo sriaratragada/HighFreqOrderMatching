@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -96,8 +97,6 @@ TEST(OrderBookTest, DuplicateOrderIdRejected) {
     EXPECT_FALSE(book.addOrder({Order::BUY, Order::LIMIT, 1, 51.0, 0.0, 0, 9}));
 }
 
-/// Market buy pegs to best ask when liquidity is already resting only sweeps that price
-/// (does not walk up to higher ask levels with the same order).
 TEST(OrderBookTest, MarketBuyPegDoesNotWalkMultipleAskLevels) {
     OrderBook book("FIFO");
     ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 10, 90.0, 0.0, 0, 1}));
@@ -159,4 +158,64 @@ TEST(OrderBookTest, StopBuyOnEmptyBookActivatesImmediately) {
     OrderBook book("FIFO");
     ASSERT_TRUE(book.addOrder({Order::BUY, Order::STOP, 2, 0.0, 50.0, 0, 1}));
     EXPECT_FALSE(book.getBids().empty());
+}
+
+TEST(OrderBookTest, IocLimitDropsUnfilledRemainder) {
+    OrderBook book("FIFO");
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 3, 100.0, 0.0, 0, 1}));
+    Order ioc{Order::BUY, Order::LIMIT, 10, 101.0, 0.0, 0, 2};
+    ioc.tif = Order::IOC;
+    ASSERT_TRUE(book.addOrder(ioc));
+    EXPECT_TRUE(book.getBids().empty());
+    ASSERT_TRUE(book.getAsks().empty());
+}
+
+TEST(OrderBookTest, IocDoesNotRestMarketBuyRemainder) {
+    OrderBook book("FIFO");
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 5, 90.0, 0.0, 0, 1}));
+    Order ioc{Order::BUY, Order::MARKET, 12, 0.0, 0.0, 0, 2};
+    ioc.tif = Order::IOC;
+    ASSERT_TRUE(book.addOrder(ioc));
+    EXPECT_TRUE(book.getBids().empty());
+}
+
+TEST(OrderBookTest, FokRejectsWhenNotFullyFillable) {
+    OrderBook book("FIFO");
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 3, 100.0, 0.0, 0, 1}));
+    Order fok{Order::BUY, Order::LIMIT, 10, 101.0, 0.0, 0, 2};
+    fok.tif = Order::FOK;
+    EXPECT_FALSE(book.addOrder(fok));
+    ASSERT_EQ(book.getAsks().size(), 1u);
+    EXPECT_EQ(book.getAsks().begin()->second.front().quantity, 3);
+}
+
+TEST(OrderBookTest, FokAcceptsWhenFullyFillable) {
+    OrderBook book("FIFO");
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 10, 100.0, 0.0, 0, 1}));
+    Order fok{Order::BUY, Order::LIMIT, 10, 100.0, 0.0, 0, 2};
+    fok.tif = Order::FOK;
+    ASSERT_TRUE(book.addOrder(fok));
+    EXPECT_TRUE(book.getBids().empty());
+    EXPECT_TRUE(book.getAsks().empty());
+}
+
+TEST(OrderBookTest, PerBookOrderIdCounters) {
+    OrderBook a("FIFO");
+    OrderBook b("FIFO");
+    ASSERT_TRUE(a.addOrder({Order::BUY, Order::LIMIT, 1, 10.0, 0.0, 0, -1}));
+    ASSERT_TRUE(b.addOrder({Order::BUY, Order::LIMIT, 1, 10.0, 0.0, 0, -1}));
+    ASSERT_EQ(a.getBids().begin()->second.front().orderId, 0);
+    ASSERT_EQ(b.getBids().begin()->second.front().orderId, 0);
+}
+
+TEST(OrderBookTest, PrintDepthAggregatesLevels) {
+    OrderBook book("FIFO");
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 3, 100.0, 0.0, 0, 1}));
+    ASSERT_TRUE(book.addOrder({Order::SELL, Order::LIMIT, 2, 100.0, 0.0, 0, 2}));
+    ASSERT_TRUE(book.addOrder({Order::BUY, Order::LIMIT, 1, 99.0, 0.0, 0, 3}));
+    std::ostringstream os;
+    book.printDepth(os, 5);
+    const std::string s = os.str();
+    EXPECT_NE(s.find("100"), std::string::npos);
+    EXPECT_NE(s.find("x 5"), std::string::npos);
 }

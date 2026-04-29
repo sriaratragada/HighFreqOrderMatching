@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <iosfwd>
 #include <limits>
 #include <map>
 #include <string>
@@ -13,6 +14,7 @@
 struct Order {
     enum Type { BUY, SELL };
     enum OrderType { MARKET, LIMIT, STOP };
+    enum TimeInForce { GTC, IOC, FOK };
 
     Type type = BUY;
     OrderType orderType = LIMIT;
@@ -20,8 +22,8 @@ struct Order {
     double price = 0.0;
     double stopPrice = 0.0;
     uint64_t timestamp = 0;
-    /// Negative means assign automatically in OrderBook::addOrder.
     int orderId = -1;
+    TimeInForce tif = GTC;
 
     bool operator==(const Order& other) const { return orderId == other.orderId; }
 
@@ -37,19 +39,20 @@ class OrderBook {
 public:
     explicit OrderBook(std::string allocation, TradeCallback trade_sink = TradeCallback());
 
-    /// \return false if \p order uses an explicit non-negative id that is already active.
+    /// \return false if duplicate active id, or FOK could not be fully filled immediately.
     bool addOrder(Order order);
     int getQuantity(const Order& order) const;
     void removeOrder(const Order& order);
-    /// Remove resting limit order or queued stop by id. Returns true if found.
     bool cancelOrder(int orderId);
-    /// True if \p orderId appears in the stop queue or a resting limit on either side.
     bool isOrderIdActive(int orderId) const;
     void matchOrders();
     double getLowestAskPrice() const;
     double getHighestBidPrice() const;
     void dispBids() const;
     void dispAsks() const;
+
+    /// Aggregated quantity per price level, up to \p max_levels per side (asks best-first, bids best-first).
+    void printDepth(std::ostream& os, int max_levels = 10) const;
 
     const std::map<double, std::deque<Order>>& getBids() const { return bids; }
     const std::map<double, std::deque<Order>>& getAsks() const { return asks; }
@@ -60,14 +63,17 @@ private:
     std::map<double, std::deque<Order>> asks;
     std::deque<Order> stopOrders;
     TradeCallback trade_sink_;
+    int next_order_id_ = 0;
 
+    int allocateOrderId();
     void matchOrdersFIFO(std::deque<Order>& bidOrders, std::deque<Order>& askOrders);
     void matchOrdersProRata(std::deque<Order>& bidOrders, std::deque<Order>& askOrders);
     void executeTrade(const Order& bidOrder, const Order& askOrder, int quantity, double trade_price);
     void checkStopOrders();
     void ensureOrderId(Order& order);
-
-    static int allocateOrderId();
+    static void applyMarketPeg(Order& order, const std::map<double, std::deque<Order>>& bids,
+                               const std::map<double, std::deque<Order>>& asks);
+    bool canFullyFill(const Order& order) const;
 };
 
 #endif
