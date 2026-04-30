@@ -1,4 +1,4 @@
-# HighFreqOrderMatching
+# High Frequency Order Matching
 
 **A fast, readable C++17 limit-order book with FIFO or pro-rata matching, plus a replay CLI for research and testing.**
 
